@@ -41,12 +41,19 @@
 		webhookUrl: string;
 	};
 	type ChartPoint = { label: string; value: number };
+	type ContactForm = {
+		name: string;
+		email: string;
+		company: string;
+		message: string;
+	};
+	type ContactErrors = Partial<Record<keyof ContactForm, string>>;
 
 	const navItems = [
-		{ id: 'tunnels', label: 'Tunnels', icon: '⛩️' },
-		{ id: 'inspector', label: 'Traffic Inspector', icon: '📡' },
-		{ id: 'metrics', label: 'Metrics', icon: '📈' },
-		{ id: 'settings', label: 'Settings', icon: '⚙️' }
+		{ id: 'tunnels', label: 'Tunnels', icon: 'tunnels' },
+		{ id: 'inspector', label: 'Traffic Inspector', icon: 'inspector' },
+		{ id: 'metrics', label: 'Metrics', icon: 'metrics' },
+		{ id: 'settings', label: 'Settings', icon: 'settings' }
 	] as const;
 
 	const methodColors: Record<RequestLog['method'], string> = {
@@ -56,6 +63,15 @@
 	};
 
 	const protocols: Protocol[] = ['HTTP', 'TCP', 'TLS'];
+	const contactStorageKey = 'tunnlr-contact-submissions';
+	const maxContactSubmissions = 25;
+	const mockSubmissionDelayMs = 600;
+	const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+	const heroCardPoints = [
+		'Single-page mocked control plane',
+		'Live traffic stream simulation',
+		'No backend required'
+	];
 
 	let currentView: (typeof navItems)[number]['id'] = 'tunnels';
 	let loading = true;
@@ -67,6 +83,15 @@
 	let trafficInterval: ReturnType<typeof setInterval> | null = null;
 	let chartInterval: ReturnType<typeof setInterval> | null = null;
 	let toasts: Toast[] = [];
+	let contactForm: ContactForm = {
+		name: '',
+		email: '',
+		company: '',
+		message: ''
+	};
+	let contactErrors: ContactErrors = {};
+	let contactStatus: 'idle' | 'submitting' | 'success' | 'error' = 'idle';
+	let contactMessage = '';
 
 	let tunnels: Tunnel[] = [
 		{
@@ -374,6 +399,120 @@
 		return `•••• •••• ${key.slice(-6)}`;
 	}
 
+	function iconPath(name: string) {
+		const paths: Record<string, string> = {
+			tunnels:
+				'M4 7h16M4 12h16M4 17h16M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z',
+			inspector:
+				'm2.25 12 8.954-8.955a1.5 1.5 0 0 1 2.122 0L22.5 12l-9.174 8.955a1.5 1.5 0 0 1-2.122 0L2.25 12Z',
+			metrics: 'M3 3v18h18M7 15l3-3 3 2 5-7',
+			settings:
+				'M12 15.75A3.75 3.75 0 1 0 12 8.25a3.75 3.75 0 0 0 0 7.5Zm8.094-3.495.197.114a.75.75 0 0 1 .333.84l-.187.744a.75.75 0 0 0 .165.693l.542.625a.75.75 0 0 1-.013.996l-.75.75a.75.75 0 0 1-.996.013l-.625-.542a.75.75 0 0 0-.693-.165l-.744.187a.75.75 0 0 1-.84-.333l-.114-.197a.75.75 0 0 0-.643-.375h-.885a.75.75 0 0 0-.643.375l-.114.197a.75.75 0 0 1-.84.333l-.744-.187a.75.75 0 0 0-.693.165l-.625.542a.75.75 0 0 1-.996-.013l-.75-.75a.75.75 0 0 1-.013-.996l.542-.625a.75.75 0 0 0 .165-.693l-.187-.744a.75.75 0 0 1 .333-.84l.197-.114a.75.75 0 0 0 .375-.643v-.885a.75.75 0 0 0-.375-.643l-.197-.114a.75.75 0 0 1-.333-.84l.187-.744a.75.75 0 0 0-.165-.693l-.542-.625a.75.75 0 0 1 .013-.996l.75-.75a.75.75 0 0 1 .996-.013l.625.542a.75.75 0 0 0 .693.165l.744-.187a.75.75 0 0 1 .84.333l.114.197a.75.75 0 0 0 .643.375h.885a.75.75 0 0 0 .643-.375l.114-.197a.75.75 0 0 1 .84-.333l.744.187a.75.75 0 0 0 .693-.165l.625-.542a.75.75 0 0 1 .996.013l.75.75a.75.75 0 0 1 .013.996l-.542.625a.75.75 0 0 0-.165.693l.187.744a.75.75 0 0 1-.333.84l-.197.114a.75.75 0 0 0-.375.643v.885a.75.75 0 0 0 .375.643Z',
+			plus: 'M12 5v14M5 12h14',
+			share:
+				'M7.5 10.5 12 6m0 0 4.5 4.5M12 6v12M4.5 15.75v3a.75.75 0 0 0 .75.75h13.5a.75.75 0 0 0 .75-.75v-3',
+			emptyTunnels: 'M3 7.5h18M3 12h18M3 16.5h18',
+			emptyRequests: 'M3 6.75h18v10.5H3zM3 6.75l9 6 9-6',
+			emptyMetrics: 'M4.5 19.5 12 4.5l7.5 15h-15Z'
+		};
+		return paths[name];
+	}
+
+	function validateContactForm() {
+		const nextErrors: ContactErrors = {};
+		if (!contactForm.name.trim()) nextErrors.name = 'Name is required.';
+		if (!contactForm.email.trim()) {
+			nextErrors.email = 'Email is required.';
+		} else if (!emailRegex.test(contactForm.email)) {
+			nextErrors.email = 'Enter a valid email.';
+		}
+		if (!contactForm.company.trim()) nextErrors.company = 'Company is required.';
+		if (!contactForm.message.trim()) {
+			nextErrors.message = 'Message is required.';
+		} else if (contactForm.message.trim().length < 20) {
+			nextErrors.message = 'Message must be at least 20 characters.';
+		}
+		contactErrors = nextErrors;
+		return Object.keys(nextErrors).length === 0;
+	}
+
+	async function submitContact(event: SubmitEvent) {
+		event.preventDefault();
+		contactMessage = '';
+		if (!validateContactForm()) {
+			contactStatus = 'error';
+			contactMessage = 'Please fix the highlighted fields.';
+			return;
+		}
+
+		contactStatus = 'submitting';
+		await new Promise((resolve) => setTimeout(resolve, mockSubmissionDelayMs));
+		try {
+			const existing = localStorage.getItem(contactStorageKey);
+			let submissions: Array<Record<string, unknown>> = [];
+			if (existing) {
+				try {
+					const parsed: unknown = JSON.parse(existing);
+					if (Array.isArray(parsed)) {
+						submissions = parsed.filter(
+							(entry): entry is Record<string, unknown> =>
+								typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+						);
+					}
+				} catch {
+					contactStatus = 'error';
+					contactMessage = 'Stored contact data is invalid. Please try again.';
+					return;
+				}
+			}
+			submissions.unshift({
+				id: crypto.randomUUID(),
+				createdAt: new Date().toISOString(),
+				...contactForm
+			});
+			localStorage.setItem(
+				contactStorageKey,
+				JSON.stringify(submissions.slice(0, maxContactSubmissions))
+			);
+			contactForm = { name: '', email: '', company: '', message: '' };
+			contactErrors = {};
+			contactStatus = 'success';
+			contactMessage = 'Message sent. We saved it locally in this browser session.';
+		} catch {
+			contactStatus = 'error';
+			contactMessage = 'Failed to process your message.';
+		}
+	}
+
+	function revealOnScroll(node: HTMLElement) {
+		if (
+			typeof window === 'undefined' ||
+			window.matchMedia('(prefers-reduced-motion: reduce)').matches
+		) {
+			node.classList.add('is-visible');
+			return {
+				destroy() {}
+			};
+		}
+		const observer = new IntersectionObserver(
+			(entries) => {
+				for (const entry of entries) {
+					if (entry.isIntersecting) {
+						node.classList.add('is-visible');
+						observer.unobserve(node);
+					}
+				}
+			},
+			{ threshold: 0.2 }
+		);
+		observer.observe(node);
+		return {
+			destroy() {
+				observer.disconnect();
+			}
+		};
+	}
+
 	const statusTags: Record<Protocol, string> = { HTTP: 'HTTP', TCP: 'TCP', TLS: 'TLS' };
 </script>
 
@@ -400,7 +539,11 @@
 					class={`nav-item ${currentView === item.id ? 'active' : ''}`}
 					on:click={() => (currentView = item.id)}
 				>
-					<span class="icon">{item.icon}</span>
+					<span class="icon" aria-hidden="true">
+						<svg viewBox="0 0 24 24" class="heroicon">
+							<path d={iconPath(item.id)}></path>
+						</svg>
+					</span>
 					<span class="nav-label">{item.label}</span>
 				</button>
 			{/each}
@@ -417,13 +560,45 @@
 				</div>
 			</div>
 			<button class="pill-button" on:click={openNewTunnelModal}>
-				<span class="icon">＋</span>
+				<svg viewBox="0 0 24 24" class="heroicon" aria-hidden="true">
+					<path d={iconPath('plus')}></path>
+				</svg>
 				<span class="nav-label">New Tunnel</span>
 			</button>
 		</div>
 	</aside>
 
 	<main class="content">
+		<section class="hero card is-visible">
+			<div class="hero-copy">
+				<p class="eyebrow">tunnlr dashboard</p>
+				<h2>Single-page mocked tunneling control plane</h2>
+				<p class="muted">
+					Everything runs entirely on the client with mock data, live request simulation, and zero
+					backend setup.
+				</p>
+				<div class="hero-actions">
+					<button class="primary" on:click={() => (currentView = 'tunnels')}>Open dashboard</button>
+					<button class="pill-button" on:click={() => copy(window.location.href, 'Share link')}>
+						<svg viewBox="0 0 24 24" class="heroicon" aria-hidden="true">
+							<path d={iconPath('share')}></path>
+						</svg>
+						Share view
+					</button>
+				</div>
+			</div>
+			<div class="hero-points card">
+				{#each heroCardPoints as point (point)}
+					<div class="hero-point">
+						<svg viewBox="0 0 24 24" class="heroicon" aria-hidden="true">
+							<path d={iconPath('metrics')}></path>
+						</svg>
+						<span>{point}</span>
+					</div>
+				{/each}
+			</div>
+		</section>
+
 		<header class="page-header">
 			<div>
 				<p class="eyebrow">Live tunneling</p>
@@ -438,13 +613,15 @@
 					Live
 				</div>
 				<button class="pill-button" on:click={() => copy(window.location.href, 'Share link')}>
-					<span class="icon">⤴</span>
+					<svg viewBox="0 0 24 24" class="heroicon" aria-hidden="true">
+						<path d={iconPath('share')}></path>
+					</svg>
 					Share view
 				</button>
 			</div>
 		</header>
 
-		<section class="panel">
+		<section class="panel reveal" use:revealOnScroll>
 			{#if currentView === 'tunnels'}
 				{#if loading}
 					<div class="skeleton-table">
@@ -462,7 +639,11 @@
 					</div>
 					{#if tunnels.length === 0}
 						<div class="empty">
-							<div class="icon">🛰️</div>
+							<div class="icon">
+								<svg viewBox="0 0 24 24" class="heroicon" aria-hidden="true">
+									<path d={iconPath('emptyTunnels')}></path>
+								</svg>
+							</div>
 							<div>
 								<h3>No tunnels</h3>
 								<p class="muted">Create a tunnel to start proxying traffic.</p>
@@ -557,7 +738,11 @@
 							</div>
 							{#if filteredRequests.length === 0}
 								<div class="empty">
-									<div class="icon">📭</div>
+									<div class="icon">
+										<svg viewBox="0 0 24 24" class="heroicon" aria-hidden="true">
+											<path d={iconPath('emptyRequests')}></path>
+										</svg>
+									</div>
 									<div>
 										<h3>No requests yet</h3>
 										<p class="muted">Traffic will stream in automatically.</p>
@@ -704,7 +889,11 @@
 						</div>
 						{#if tunnels.length === 0}
 							<div class="empty">
-								<div class="icon">🧭</div>
+								<div class="icon">
+									<svg viewBox="0 0 24 24" class="heroicon" aria-hidden="true">
+										<path d={iconPath('emptyMetrics')}></path>
+									</svg>
+								</div>
 								<div>
 									<h3>No data</h3>
 									<p class="muted">Create tunnels to populate metrics.</p>
@@ -831,6 +1020,77 @@
 				{/if}
 			{/if}
 		</section>
+
+		<section class="contact card reveal" use:revealOnScroll>
+			<div class="section-top">
+				<div>
+					<p class="eyebrow">Contact</p>
+					<h2>Get in touch</h2>
+					<p class="muted">
+						Send product questions, implementation feedback, or integration requests for tunnlr.
+					</p>
+				</div>
+			</div>
+			<form class="contact-form" on:submit={submitContact} novalidate>
+				<div class="contact-grid">
+					<label>
+						<span>Name</span>
+						<input
+							type="text"
+							bind:value={contactForm.name}
+							aria-invalid={Boolean(contactErrors.name)}
+							placeholder="Your name"
+						/>
+						{#if contactErrors.name}<small class="form-error">{contactErrors.name}</small>{/if}
+					</label>
+					<label>
+						<span>Email</span>
+						<input
+							type="email"
+							bind:value={contactForm.email}
+							aria-invalid={Boolean(contactErrors.email)}
+							placeholder="you@company.com"
+						/>
+						{#if contactErrors.email}<small class="form-error">{contactErrors.email}</small>{/if}
+					</label>
+					<label>
+						<span>Company</span>
+						<input
+							type="text"
+							bind:value={contactForm.company}
+							aria-invalid={Boolean(contactErrors.company)}
+							placeholder="Company name"
+						/>
+						{#if contactErrors.company}<small class="form-error">{contactErrors.company}</small
+							>{/if}
+					</label>
+				</div>
+				<label>
+					<span>Message</span>
+					<textarea
+						rows="5"
+						bind:value={contactForm.message}
+						aria-invalid={Boolean(contactErrors.message)}
+						placeholder="Tell us what you are building with tunnels."
+					></textarea>
+					{#if contactErrors.message}<small class="form-error">{contactErrors.message}</small>{/if}
+				</label>
+				<div class="contact-actions">
+					<button class="primary" type="submit" disabled={contactStatus === 'submitting'}>
+						{contactStatus === 'submitting' ? 'Sending...' : 'Send message'}
+					</button>
+					{#if contactMessage}
+						<p class={contactStatus === 'success' ? 'good' : 'bad'}>{contactMessage}</p>
+					{/if}
+				</div>
+			</form>
+		</section>
+
+		<footer class="footer reveal" use:revealOnScroll>
+			<p class="muted mono">
+				tunnlr dashboard · mocked control plane built with SvelteKit + TypeScript.
+			</p>
+		</footer>
 	</main>
 </div>
 
@@ -903,6 +1163,37 @@
 </div>
 
 <style>
+	:global(button),
+	:global(input),
+	:global(select),
+	:global(textarea) {
+		min-height: 44px;
+		min-width: 44px;
+	}
+
+	.heroicon {
+		width: 18px;
+		height: 18px;
+		stroke: currentColor;
+		fill: none;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+		stroke-width: 1.75;
+	}
+
+	.reveal {
+		opacity: 0;
+		transform: translateY(10px);
+		transition:
+			opacity 280ms ease,
+			transform 280ms ease;
+	}
+
+	.reveal.is-visible {
+		opacity: 1;
+		transform: translateY(0);
+	}
+
 	.page {
 		display: grid;
 		grid-template-columns: 260px 1fr;
@@ -1015,6 +1306,59 @@
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
+	}
+
+	.hero {
+		display: grid;
+		grid-template-columns: 1.2fr 0.9fr;
+		gap: 14px;
+		padding: 16px;
+		animation: heroEnter 360ms ease;
+	}
+
+	@keyframes heroEnter {
+		from {
+			opacity: 0;
+			transform: translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+
+	.hero-copy {
+		display: grid;
+		gap: 10px;
+		align-content: center;
+	}
+
+	.hero-copy h2 {
+		margin: 0;
+		font-size: clamp(24px, 3vw, 34px);
+	}
+
+	.hero-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+	}
+
+	.hero-points {
+		padding: 12px;
+		display: grid;
+		gap: 8px;
+		align-content: center;
+	}
+
+	.hero-point {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 10px;
+		border-radius: 10px;
+		background: #0f0f0f;
+		border: 1px solid var(--border);
 	}
 
 	.page-header {
@@ -1530,7 +1874,66 @@
 		border-color: rgba(255, 107, 107, 0.5);
 	}
 
+	.contact {
+		padding: 14px;
+	}
+
+	.contact-form {
+		display: grid;
+		gap: 12px;
+	}
+
+	.contact-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 10px;
+	}
+
+	.contact-form label {
+		display: grid;
+		gap: 6px;
+	}
+
+	.contact-form input,
+	.contact-form textarea {
+		background: #101010;
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		padding: 10px 12px;
+		color: inherit;
+	}
+
+	.contact-form textarea {
+		resize: vertical;
+		min-height: 140px;
+	}
+
+	.contact-form input[aria-invalid='true'],
+	.contact-form textarea[aria-invalid='true'] {
+		border-color: rgba(255, 107, 107, 0.5);
+	}
+
+	.form-error {
+		color: #ff6b6b;
+		font-size: 12px;
+	}
+
+	.contact-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+		align-items: center;
+	}
+
+	.footer {
+		padding: 10px 4px 4px;
+	}
+
 	@media (max-width: 1024px) {
+		.hero {
+			grid-template-columns: 1fr;
+		}
+
 		.page {
 			grid-template-columns: 88px 1fr;
 		}
@@ -1581,6 +1984,10 @@
 		}
 
 		.inspector {
+			grid-template-columns: 1fr;
+		}
+
+		.contact-grid {
 			grid-template-columns: 1fr;
 		}
 	}
